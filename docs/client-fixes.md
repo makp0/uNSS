@@ -16,3 +16,5 @@ An intermittent curl 56 receive failure recovered on retry. Its underlying SSL c
 Build the app and background module together with `build-all.sh`; the NRO embeds the matching module. Current bundled module version is 20; the successful hardware upload used module 19. The publication review additionally fixed `ZipReader::extractAll` returning before all entries were extracted; its regression test covers full extraction and extraction failures. This last correction has native coverage and is not yet installed on the tested console.
 
 See [client regression instructions](../tests/client/README.md).
+
+CI uses a pinned official devkitPro image with preinstalled Switch dependencies; it checks packages offline rather than fetching package databases during a build. Push an `unss-v*` tag to run tests/build and publish release assets after every job succeeds.
