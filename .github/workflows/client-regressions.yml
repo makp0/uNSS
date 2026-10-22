@@ -11,7 +11,7 @@ jobs:
   client-tests:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: Exercise real client implementations with sandbox mounts
         run: python3 tests/client/check.py .
       - name: Verify HTTP connection reuse
@@ -21,8 +21,8 @@ jobs:
   server-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.12'
           cache: pip
@@ -32,14 +32,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - name: Build Switch toolchain image
         run: docker build -t unss-client-builder:latest client
       - name: Build background module and app together
         run: sh build-all.sh
       - name: Verify embedded module and package release assets
         run: python3 scripts/package-client.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: unss-switch
           path: dist/
@@ -51,8 +51,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
         with:
           name: unss-switch
           path: dist
