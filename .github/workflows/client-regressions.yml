@@ -1,0 +1,63 @@
+name: Test, build and release
+on:
+  push:
+    branches: [main]
+    tags: ['unss-v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  client-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exercise real client implementations with sandbox mounts
+        run: python3 tests/client/check.py .
+      - name: Verify HTTP connection reuse
+        run: python3 tests/client/reuse-check.py .
+      - name: Verify SSL wrappers preserve service behavior
+        run: python3 tests/client/tls-wrap-check.py .
+  server-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: server/requirements*.txt
+      - run: python -m pip install -r server/requirements-dev.txt
+      - run: python -m pytest server/tests -q
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Switch toolchain image
+        run: docker build -t unss-client-builder:latest client
+      - name: Build background module and app together
+        run: sh build-all.sh
+      - name: Verify embedded module and package release assets
+        run: python3 scripts/package-client.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unss-switch
+          path: dist/
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/unss-v')
+    needs: [client-tests, server-tests, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: unss-switch
+          path: dist
+      - name: Publish tested assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --title "uNSS $RELEASE_TAG" --notes-file docs/client-fixes.md

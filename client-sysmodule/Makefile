@@ -57,7 +57,7 @@ CFLAGS	+=	$(INCLUDE) -D__SWITCH__ `curl-config --cflags`
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions
 
 ASFLAGS	:=	-g $(ARCH)
-LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=sslConnectionRead,--wrap=sslConnectionWrite
 
 LIBS	:= `curl-config --libs` -lmbedtls -lmbedx509 -lmbedcrypto -lnx
 

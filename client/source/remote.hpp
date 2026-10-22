@@ -3,6 +3,7 @@
 #include <vector>
 
 #include <switch.h>
+#include "http.hpp"
 
 
 class IRemoteStoreIO
@@ -28,6 +29,9 @@ public:
 class HTTPRemoteStore : public IRemoteStoreIO
 {
 private:
+    HTTPClient httpClient;
+    std::function<void(const std::string&)> progressLog;
+    void configureProgress(HTTPClient& client, const std::string& direction);
     std::string serverUrl;
     std::string saveDataPath;
 
@@ -37,14 +41,19 @@ private:
     // 열리지 않는 것을 한참 못 찾았다 (2026-07-31). 반환값 규약은 그대로
     // 두고, 원인만 여기에 남긴다.
     int lastHttpResult = 0;
+    CURLcode lastCurlCode = CURLE_OK;
+    const char* requestStage = "none";
 
 public:
     HTTPRemoteStore(const std::string& serverUrl, const std::string& saveDataPath);
     ~HTTPRemoteStore();
+    void setProgressCallback(const std::function<void(const std::string&)>& callback) { progressLog = callback; }
 
 public:
     // 음수면 HTTPCLIENT_ERROR_* (연결 자체가 안 된 것), 양수면 HTTP 상태 코드.
     int getLastHttpResult() const { return lastHttpResult; }
+    CURLcode getLastCurlCode() const { return lastCurlCode; }
+    std::string getLastDiagnostic() const { return std::string("stage=") + requestStage + " " + httpClient.getLastDiagnostic(); }
 
 private:
     int _issueSaveDataRevisionId(const std::string userName, const u64 titleId, std::string& revisionId);

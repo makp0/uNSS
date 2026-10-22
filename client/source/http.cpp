@@ -1,4 +1,6 @@
 #include "http.hpp"
+#include "tlsdiag.hpp"
+#include <cstdio>
 
 #include <string.h>
 #include <sys/stat.h>
@@ -55,6 +57,24 @@ HTTPClient::~HTTPClient()
 }
 
 
+HTTPClient& HTTPClient::reset()
+{
+    // Reset request state while retaining libcurl's connection and TLS caches.
+    if (curl) curl_easy_reset(curl);
+    if (curl_headers) curl_slist_free_all(curl_headers);
+    curl_headers = NULL;
+    headers.clear();
+    url.clear();
+    method = "GET";
+    lastCurlCode = CURLE_OK;
+    sendSize = -1;
+    onProgress = nullptr;
+    onSend = nullptr;
+    onReceive = nullptr;
+    return *this;
+}
+
+
 HTTPClient& HTTPClient::setUrl(const std::string& url)
 {
     this->url = url;
@@ -92,6 +112,27 @@ HTTPClient& HTTPClient::setSendCallback(const std::function<bool(void* data, siz
 }
 
 
+HTTPClient& HTTPClient::setSendSize(curl_off_t size)
+{
+    sendSize = size;
+    return *this;
+}
+
+HTTPClient& HTTPClient::setProgressCallback(const std::function<void(curl_off_t, curl_off_t)>& callback)
+{
+    onProgress = callback;
+    return *this;
+}
+
+int HTTPClient::progressCallback(void* userp, curl_off_t downTotal, curl_off_t downNow, curl_off_t upTotal, curl_off_t upNow)
+{
+    HTTPClient* client = static_cast<HTTPClient*>(userp);
+    if (client && client->onProgress)
+        client->onProgress(client->onSend ? upTotal : downTotal, client->onSend ? upNow : downNow);
+    return 0;
+}
+
+
 size_t HTTPClient::writeCallback(void* contents, size_t size, size_t nmemb, void* userp)
 {
     HTTPClient* client = static_cast<HTTPClient*>(userp);
@@ -110,11 +151,11 @@ size_t HTTPClient::readCallback(void* ptr, size_t size, size_t nmemb, void* user
     HTTPClient* client = static_cast<HTTPClient*>(userp);
     if (!client || !client->onSend) 
     {
-        return size * nmemb;
+        return 0;
     }
 
     size_t actualSize = 0;
-    return client->onSend(ptr, size * nmemb, actualSize) ? actualSize : 0;
+    return client->onSend(ptr, size * nmemb, actualSize) ? actualSize : CURL_READFUNC_ABORT;
 }
 
 
@@ -122,6 +163,7 @@ int HTTPClient::perform()
 {
     if (!curl) 
     {
+        lastCurlCode = CURLE_FAILED_INIT;
         return HTTPCLIENT_ERROR_INIT_FAILED;
     }
 
@@ -161,13 +203,34 @@ int HTTPClient::perform()
     else if (method == "POST") 
     {
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, onSend ? sendSize : (curl_off_t)0);
+    }
+
+    if (onProgress)
+    {
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCallback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     }
 
     // 비동기 모드 설정
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 
+    TlsDiag::clear();
+    lastDiagnostic.clear();
     CURLcode res = curl_easy_perform(curl);
+    long response = 0, osError = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response);
+    curl_easy_getinfo(curl, CURLINFO_OS_ERRNO, &osError);
+    const auto tls = TlsDiag::lastFailure();
+    char diagnostic[192];
+    snprintf(diagnostic, sizeof(diagnostic), "[DEBUG-tls19] response=%ld errno=%ld ssl=0x%08x module=%u description=%u operation=%s",
+        response, osError, (unsigned)tls.result, (unsigned)(tls.result & 0x1ff),
+        (unsigned)((tls.result >> 9) & 0x1fff), tls.operation);
+    lastDiagnostic = diagnostic;
+    lastCurlCode = res;
     if (res != CURLE_OK) 
     {
         // libcurl 에러 코드를 우리의 에러 코드로 매핑

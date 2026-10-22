@@ -2,6 +2,8 @@
 
 #include "miniz.h"
 #include "fileio.hpp"
+#include <set>
+#include <sstream>
 
 
 ZipWriter::ZipWriter()
@@ -50,11 +52,18 @@ bool ZipWriter::add(const std::string& sourcePath, const std::string& destPath)
 
 bool ZipWriter::add(const std::string& sourcePath, const std::string& destPath, const std::string& comment)
 {
-    if (mz_zip_writer_add_file((mz_zip_archive*)pZip, destPath.c_str(), sourcePath.c_str(), comment.c_str(), (mz_uint16)comment.size(), MZ_DEFAULT_COMPRESSION))
+    if (pZip && mz_zip_writer_add_file((mz_zip_archive*)pZip, destPath.c_str(), sourcePath.c_str(), comment.c_str(), (mz_uint16)comment.size(), MZ_DEFAULT_COMPRESSION))
     {
         return true;
     }
     return false;
+}
+
+
+bool ZipWriter::addDirectory(const std::string& path)
+{
+    const std::string name = path.back() == '/' ? path : path + "/";
+    return pZip && mz_zip_writer_add_mem((mz_zip_archive*)pZip, name.c_str(), NULL, 0, 0);
 }
 
 
@@ -66,9 +75,9 @@ bool ZipWriter::open(const std::string& path)
 }
 
 
-void ZipWriter::close()
+bool ZipWriter::close()
 {
-    _closeZipArchive();
+    return _closeZipArchive();
 }
 
 
@@ -78,24 +87,23 @@ bool ZipWriter::_openZipArchive(const char* path)
     if (pZip != NULL)
     {
         memset(pZip, 0, sizeof(mz_zip_archive));
-        mz_zip_writer_init_file((mz_zip_archive*)pZip, path, 0);
-        return true;
+        if (mz_zip_writer_init_file((mz_zip_archive*)pZip, path, 0)) return true;
+        free(pZip);
+        pZip = NULL;
     }
     return false;
 }
 
 
-void ZipWriter::_closeZipArchive()
+bool ZipWriter::_closeZipArchive()
 {
-    if (pZip != NULL)
-    {
-        if (mz_zip_writer_finalize_archive((mz_zip_archive*)pZip))
-        {
-            mz_zip_writer_end((mz_zip_archive*)pZip);
-        }
-        free(pZip);
-        pZip = NULL;
-    }
+    if (!pZip) return true;
+    const bool finalized = mz_zip_writer_finalize_archive((mz_zip_archive*)pZip);
+    const bool ended = mz_zip_writer_end((mz_zip_archive*)pZip);
+    free(pZip);
+    pZip = NULL;
+    zipPath.clear();
+    return finalized && ended;
 }
 
 
@@ -140,13 +148,13 @@ ZipReader& ZipReader::operator=(ZipReader&& other)
 bool ZipReader::extractAll(const std::string& path)
 {
     bool ret = true;
-    walk([&](const std::string& fileName, ZipReader::EXTRACT_ONE_FUNC extractOne)
+    const bool walked = walk([&](const std::string& fileName, ZipReader::EXTRACT_ONE_FUNC extractOne)
         {
             ret = extractOne(path + "/" + fileName);
             return ret;
         }
     );
-    return !ret;
+    return walked && ret;
 }
 
 
@@ -167,25 +175,56 @@ bool ZipReader::extractOne(const std::string& sourcePath, const std::string& des
 }
 
 
-void ZipReader::walk(const ARCHIVE_WALK_CALLBACK_FUNC& callback)
+bool ZipReader::walk(const ARCHIVE_WALK_CALLBACK_FUNC& callback)
 {
+    if (!pZip) return false;
     const mz_uint numCount = mz_zip_reader_get_num_files((mz_zip_archive*)pZip);
     for (mz_uint i = 0; i < numCount; ++i)
     {
         mz_zip_archive_file_stat fileStat;
-        mz_zip_reader_file_stat((mz_zip_archive*)pZip, i, &fileStat);
+        if (!mz_zip_reader_file_stat((mz_zip_archive*)pZip, i, &fileStat)) return false;
+        if (mz_zip_reader_get_filename((mz_zip_archive*)pZip, i, NULL, 0) > sizeof(fileStat.m_filename)) return false;
         std::string fileName(fileStat.m_filename);
         if (!callback(
             fileName,
-            [this, fileName](const std::string& destPath)
+            [this, fileName, isDir = fileStat.m_is_directory](const std::string& destPath)
             {
+                if (isDir) return recursiveMkdir(destPath) == 0;
                 return extractOne(fileName, destPath);
             }
         ))
         {
-            break;
+            return false;
         }
     }
+    return true;
+}
+
+
+bool ZipReader::validate()
+{
+    if (!pZip || !mz_zip_validate_archive((mz_zip_archive*)pZip, 0)) return false;
+    std::set<std::string> names;
+    return walk([&](const std::string& name, EXTRACT_ONE_FUNC)
+    {
+        if (name.empty() || name[0] == '/' || name.find('\\') != std::string::npos
+            || name.find(':') != std::string::npos || name.find('\0') != std::string::npos) return false;
+        std::stringstream parts(name);
+        std::string part;
+        bool first = true;
+        std::string normalized;
+        while (std::getline(parts, part, '/'))
+        {
+            if (part.empty() || part == "." || part == "..") return false;
+            if (first && part != "saves" && part != "bcat") return false;
+            if (!normalized.empty()) normalized += "/";
+            normalized += part;
+            first = false;
+        }
+        if (normalized == "saves" || normalized == "bcat")
+            return name.back() == '/' && names.insert(normalized).second;
+        return !first && names.insert(normalized).second;
+    });
 }
 
 
@@ -209,8 +248,9 @@ bool ZipReader::_openZipArchive(const char* path)
     if (pZip != NULL)
     {
         memset(pZip, 0, sizeof(mz_zip_archive));
-        mz_zip_reader_init_file((mz_zip_archive*)pZip, path, 0);
-        return true;
+        if (mz_zip_reader_init_file((mz_zip_archive*)pZip, path, 0)) return true;
+        free(pZip);
+        pZip = NULL;
     }
     return false;
 }

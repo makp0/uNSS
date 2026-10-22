@@ -1,8 +1,11 @@
 #include "sync.hpp"
 
 #include <cstdio>
+#include <cerrno>
 #include <ctime>
 #include <vector>
+#include <map>
+#include "fingerprint.hpp"
 
 #include <sys/stat.h>
 
@@ -35,95 +38,78 @@ std::string titleNameOrUnknown(u64 titleID)
 // 한 줄에 "타이틀ID 시각" 형식.
 std::string syncStatePath(const std::string& saveDataPath)
 {
-    return saveDataPath + "/.syncstate";
+    return saveDataPath + "/.syncstate-sha256-v1";
 }
 
 
 std::string toHexId(u64 titleID)
 {
     char buffer[17];
-    snprintf(buffer, sizeof(buffer), "%016lX", titleID);
+    snprintf(buffer, sizeof(buffer), "%016llX", (unsigned long long)titleID);
     return std::string(buffer);
 }
 
 
-// 세이브 안에서 가장 최근 수정 시각을 찾는다.
-// 마운트에 실패하면 0 을 돌려주고, 그 경우 호출한 쪽은 "바뀌었다" 로 본다.
-u64 latestSaveDataTimestamp(const AccountUid uid, u64 titleID)
+bool saveFingerprint(const AccountUid uid, u64 titleID, std::string& fingerprint, bool* missing = nullptr)
 {
-    const std::string mountPoint = "unsschk";
-
-    if (mountSaveData(mountPoint, uid, titleID) != 0)
-        return 0;
-
-    u64 latest = 0;
-    walk(mountPoint + ":/", [&latest](const std::string& path, bool isDir)
+    fingerprint.clear();
+    if (missing) *missing = false;
+    const int mounted = mountSaveData("unsschk", uid, titleID);
+    if (mounted != 0) { if (missing) *missing = mounted == MOUNT_TARGET_NOT_FOUND; return false; }
+    std::string account;
+    const bool ok = fingerprintTree("unsschk:/", account);
+    unmount("unsschk");
+    if (!ok) return false;
+    const int bcat = mountBcatSaveData("unssbchk", titleID);
+    std::string extra = "absent";
+    if (bcat == 0)
     {
-        if (isDir) return;
-
-        struct stat st;
-        if (stat(path.c_str(), &st) == 0)
-        {
-            const u64 mtime = (u64)st.st_mtime;
-            if (mtime > latest) latest = mtime;
-        }
-    });
-
-    unmount(mountPoint);
-    return latest;
+        const bool bcatOk = fingerprintTree("unssbchk:/", extra);
+        unmount("unssbchk");
+        if (!bcatOk) return false;
+    }
+    else if (bcat != MOUNT_TARGET_NOT_FOUND) return false;
+    fingerprint = account + ":" + extra;
+    return true;
 }
 
-
-u64 readSyncedTimestamp(const std::string& saveDataPath, u64 titleID)
+std::string readSyncedFingerprint(const std::string& saveDataPath, u64 titleID)
 {
     FILE* fp = fopen(syncStatePath(saveDataPath).c_str(), "r");
-    if (!fp) return 0;
-
+    if (!fp && errno == ENOENT) fp = fopen((syncStatePath(saveDataPath) + ".previous").c_str(), "r");
+    if (!fp) return "";
     const std::string wanted = toHexId(titleID);
-    char idBuffer[32];
-    unsigned long long stamp = 0;
-    u64 found = 0;
-
-    while (fscanf(fp, "%31s %llu", idBuffer, &stamp) == 2)
-    {
-        if (wanted == idBuffer)
-        {
-            found = (u64)stamp;
-            break;
-        }
-    }
-
+    char id[32], fingerprint[160];
+    std::string found;
+    while (fscanf(fp, "%31s %159s", id, fingerprint) == 2)
+        if (wanted == id) { found = fingerprint; break; }
     fclose(fp);
     return found;
 }
 
-
-void writeSyncedTimestamp(const std::string& saveDataPath, u64 titleID, u64 stamp)
+bool writeSyncedFingerprint(const std::string& saveDataPath, u64 titleID, const std::string& fingerprint)
 {
     const std::string path = syncStatePath(saveDataPath);
     const std::string wanted = toHexId(titleID);
-
-    // 통째로 읽어서 해당 줄만 갈아끼운다. 항목이 수십 개라 이 정도면 충분하다.
     std::string rebuilt;
     FILE* fp = fopen(path.c_str(), "r");
     if (fp)
     {
-        char idBuffer[32];
-        unsigned long long existing = 0;
-        while (fscanf(fp, "%31s %llu", idBuffer, &existing) == 2)
-        {
-            if (wanted == idBuffer) continue;
-            rebuilt += std::string(idBuffer) + " " + std::to_string(existing) + "\n";
-        }
+        char id[32], existing[160];
+        while (fscanf(fp, "%31s %159s", id, existing) == 2)
+            if (wanted != id) rebuilt += std::string(id) + " " + existing + "\n";
+        if (ferror(fp)) { fclose(fp); return false; }
         fclose(fp);
     }
-
-    rebuilt += wanted + " " + std::to_string(stamp) + "\n";
-
-    FILE* out = fopen(path.c_str(), "w");
-    if (!out) return;
-    fwrite(rebuilt.data(), 1, rebuilt.size(), out);
-    fclose(out);
+    rebuilt += wanted + " " + fingerprint + "\n";
+    const std::string temporary = path + ".tmp";
+    fp = fopen(temporary.c_str(), "w");
+    if (!fp) return false;
+    bool ok = fwrite(rebuilt.data(), 1, rebuilt.size(), fp) == rebuilt.size();
+    if (fclose(fp) != 0) ok = false;
+    if (ok) ok = replaceCacheFile(temporary, path);
+    if (!ok) remove(temporary.c_str());
+    return ok;
 }
 
 } // namespace
@@ -145,21 +131,10 @@ bool isGameRunning()
 
 bool hasSaveDataChanged(const SyncOptions& options, u64 titleID)
 {
-    const u64 current = latestSaveDataTimestamp(options.uid, titleID);
-
-    // 시각을 못 읽었으면 판단할 근거가 없다. 안전한 쪽으로 (업로드).
-    if (current == 0) return true;
-
-    return current != readSyncedTimestamp(options.saveDataPath, titleID);
-}
-
-
-void markSaveDataSynced(const SyncOptions& options, u64 titleID)
-{
-    const u64 current = latestSaveDataTimestamp(options.uid, titleID);
-    if (current == 0) return;
-
-    writeSyncedTimestamp(options.saveDataPath, titleID, current);
+    std::string current;
+    bool missing = false;
+    if (!saveFingerprint(options.uid, titleID, current, &missing)) return !missing;
+    return current != readSyncedFingerprint(options.saveDataPath, titleID);
 }
 
 
@@ -203,6 +178,7 @@ int countChangedTitles(const SyncOptions& options)
 int pushAllSaves(const SyncOptions& options, SyncLogFunc log)
 {
     HTTPRemoteStore remoteStore(options.serverUrl, options.saveDataPath);
+    remoteStore.setProgressCallback(log);
     recursiveMkdir(options.saveDataPath.c_str());
 
     const ProbeTitlesFunc probeFunc = [&](const AccountUid probeUid, std::vector<u64>& titleIDs) -> int
@@ -237,14 +213,26 @@ int pushAllSaves(const SyncOptions& options, SyncLogFunc log)
     // 있어도 이 함수는 0 을 돌려준다. 그러면 호출하는 쪽이 백업을 마쳤다고
     // 믿고 마지막 시각을 남기고, 24 시간 동안 다시 시도하지 않는다.
     int failures = 0;
+    std::map<u64, std::string> archivedFingerprints;
 
+    log("Checking save contents (SHA-256)...");
     const int ret = archiveAllSaveData(
         options.uid,
         options.saveDataPath,
         probeFunc,
-        [&log](int total, int current, u64 titleID) -> bool
+        [&](int total, int current, u64 titleID) -> bool
         {
             log("[" + padding(current, 3) + "/" + padding(total, 3) + "] " + titleNameOrUnknown(titleID));
+            std::string fingerprint;
+            bool missing = false;
+            if (!saveFingerprint(options.uid, titleID, fingerprint, &missing))
+            {
+                if (missing) return true;
+                log("Cannot read complete save contents - not marked as backed up");
+                ++failures;
+                return false;
+            }
+            archivedFingerprints[titleID] = fingerprint;
             return true;
         },
         [&](int total, int current, int ret, u64 titleID) -> bool
@@ -260,9 +248,17 @@ int pushAllSaves(const SyncOptions& options, SyncLogFunc log)
             {
                 log("Failed to archive, ret=" + std::to_string(ret));
                 ++failures;
+                if (options.stopOnUploadError) return false;
             }
             else
             {
+                std::string afterArchive;
+                if (!saveFingerprint(options.uid, titleID, afterArchive) || afterArchive != archivedFingerprints[titleID])
+                {
+                    log("Save changed while archiving - will retry");
+                    ++failures;
+                    return true;
+                }
                 int pushRet = remoteStore.push(options.nickname, titleID);
                 if (pushRet != 0)
                 {
@@ -271,13 +267,20 @@ int pushAllSaves(const SyncOptions& options, SyncLogFunc log)
                     // (HTTPCLIENT_ERROR_*, 예: -5 = TLS), 양수면 서버가
                     // 돌려준 상태 코드다.
                     log("Failed to push, ret=" + std::to_string(pushRet)
-                        + " http=" + std::to_string(remoteStore.getLastHttpResult()));
+                        + " http=" + std::to_string(remoteStore.getLastHttpResult())
+                        + " curl=" + std::to_string((int)remoteStore.getLastCurlCode())
+                        + " (" + curl_easy_strerror(remoteStore.getLastCurlCode()) + ") " + remoteStore.getLastDiagnostic());
                     ++failures;
+                    if (options.stopOnUploadError) return false;
                 }
                 else if (options.skipUnchanged)
                 {
                     // 성공한 것만 기록한다. 실패한 타이틀은 다음에 다시 올라간다.
-                    markSaveDataSynced(options, titleID);
+                    if (!writeSyncedFingerprint(options.saveDataPath, titleID, archivedFingerprints[titleID]))
+                    {
+                        log("Upload succeeded but sync state could not be saved - will retry");
+                        ++failures;
+                    }
                 }
             }
             return true;
@@ -296,6 +299,7 @@ int pushAllSaves(const SyncOptions& options, SyncLogFunc log)
 int pullAllSaves(const SyncOptions& options, SyncLogFunc log)
 {
     HTTPRemoteStore remoteStore(options.serverUrl, options.saveDataPath);
+    remoteStore.setProgressCallback(log);
     recursiveMkdir(options.saveDataPath.c_str());
 
     if (!options.remoteEnabled)
@@ -328,6 +332,7 @@ int pullAllSaves(const SyncOptions& options, SyncLogFunc log)
     }
     filterExcludedTitles(titleIDs, options.excludedTitleIds, options.excludedTitleNames);
 
+    int failures = 0;
     for (size_t i = 0; i < titleIDs.size(); ++i)
     {
         log("[" + padding(i + 1, 3) + "/" + padding(titleIDs.size(), 3) + "] " + titleNameOrUnknown(titleIDs[i]));
@@ -335,14 +340,16 @@ int pullAllSaves(const SyncOptions& options, SyncLogFunc log)
         if (remoteStore.pull(options.nickname, titleIDs[i]) != 0)
         {
             log("Failed to pull from server");
+            ++failures;
         }
         else
         {
-            restoreSaveData(options.uid, titleIDs[i], options.saveDataPath);
+            const int restored = restoreSaveData(options.uid, titleIDs[i], options.saveDataPath);
+            if (restored != SAVEDATA_OK) { log("Restore failed, ret=" + std::to_string(restored)); ++failures; }
         }
     }
 
-    return 0;
+    return failures ? -failures : 0;
 }
 
 

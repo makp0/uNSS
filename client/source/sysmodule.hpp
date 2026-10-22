@@ -66,7 +66,7 @@ constexpr const char* PROGRAM_ID = "4200000000554E53";
 //     256 KB 에서는 같은 일에 245 KB 를 썼고, 압축과 이름 조회와 업로드가
 //     한꺼번에 무너졌다. 계정 필터는 12 에서 확인됐으므로 그대로 둔다
 //     (올릴 타이틀이 78 개에서 26 개로 줄었다).
-constexpr int BUNDLED_VERSION = 13;
+constexpr int BUNDLED_VERSION = 20;
 
 
 enum class State

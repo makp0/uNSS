@@ -18,7 +18,10 @@ void ProgressScreen::runWork()
 
     auto log = [this](const std::string& msg)
     {
-        logLines.push_back(msg);
+        if (!msg.empty() && msg[0] == '\r' && !logLines.empty() && !logLines.back().empty() && logLines.back()[0] == '\r')
+            logLines.back() = msg;
+        else
+            logLines.push_back(msg);
 
         // 로그가 추가될 때마다 화면 갱신
         int logTop = 60 + 50 + 15; // title + separator
@@ -121,7 +124,7 @@ void ProgressScreen::render(Renderer& r)
     // log lines
     for (int i = scrollOffset; i < (int)logLines.size() && i < scrollOffset + maxVisible; i++)
     {
-        r.drawText(logLines[i], x, y, 18, COLOR_TEXT);
+        r.drawText(!logLines[i].empty() && logLines[i][0] == '\r' ? logLines[i].substr(1) : logLines[i], x, y, 18, COLOR_TEXT);
         y += lineHeight;
     }
 

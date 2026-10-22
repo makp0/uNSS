@@ -21,6 +21,7 @@ int walk(const std::string& path, std::function<void(const std::string&, bool is
     }
 
     dirent* entry;
+    errno = 0;
     while ((entry = readdir(dir)) != NULL)
     {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
@@ -32,17 +33,18 @@ int walk(const std::string& path, std::function<void(const std::string&, bool is
 
         if (entry->d_type == DT_DIR)
         {
-            walk(fullPath, callback);
+            if (walk(fullPath, callback) != 0) { closedir(dir); return -1; }
             callback(fullPath, true);
         }
         else
         {
             callback(fullPath, false);
         }
+        errno = 0;
     }
 
-    closedir(dir);
-    return 0;
+    const bool ok = errno == 0;
+    return closedir(dir) == 0 && ok ? 0 : -1;
 }
 
 
@@ -77,6 +79,38 @@ int recursiveMkdir(const std::string& path, mode_t mode)
     }
     
     return 0;
+}
+
+
+bool replaceCacheFile(const std::string& temporary, const std::string& destination)
+{
+    const std::string previous = destination + ".previous";
+    struct stat st;
+    if (stat(destination.c_str(), &st) != 0)
+    {
+        if (errno != ENOENT) return false;
+        if (stat(previous.c_str(), &st) == 0)
+        {
+            if (rename(previous.c_str(), destination.c_str()) != 0) return false;
+        }
+        else if (errno != ENOENT) return false;
+    }
+    if (rename(temporary.c_str(), destination.c_str()) == 0)
+    {
+        remove(previous.c_str());
+        return true;
+    }
+    if (errno != EEXIST) return false;
+    // Horizon rename does not replace an existing file. Keep the old file until install succeeds.
+    if (remove(previous.c_str()) != 0 && errno != ENOENT) return false;
+    if (rename(destination.c_str(), previous.c_str()) != 0) return false;
+    if (rename(temporary.c_str(), destination.c_str()) != 0)
+    {
+        rename(previous.c_str(), destination.c_str());
+        return false;
+    }
+    remove(previous.c_str());
+    return true;
 }
 
 
@@ -172,6 +206,7 @@ int mountBcatSaveData(const std::string& mountPoint, const u64 titleID)
     Result rc = fsdevMountBcatSaveData(mountPoint.c_str(), titleID);
     if (R_FAILED(rc))
     {
+        if (R_MODULE(rc) == 2 && R_DESCRIPTION(rc) == 1002) return MOUNT_TARGET_NOT_FOUND;
         return -1;
     }
 

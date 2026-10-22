@@ -24,12 +24,13 @@ public:
 public:
     bool add(const std::string& sourcePath, const std::string& destPath);
     bool add(const std::string& sourcePath, const std::string& destPath, const std::string& comment);
+    bool addDirectory(const std::string& path);
     bool open(const std::string& path);
-    void close();
+    bool close();
 
 private:
     bool _openZipArchive(const char* path);
-    void _closeZipArchive();
+    bool _closeZipArchive();
 };
 
 
@@ -59,7 +60,8 @@ public:
     bool extractAll(const std::string& path);
     bool extractOne(const std::string& sourcePath, const std::string& destPath);
 
-    void walk(const ARCHIVE_WALK_CALLBACK_FUNC& callback);
+    bool walk(const ARCHIVE_WALK_CALLBACK_FUNC& callback);
+    bool validate();
 
     bool open(const std::string& path);
     void close();

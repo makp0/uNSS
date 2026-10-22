@@ -3,6 +3,10 @@ uNX Save Sync (aka. uNSS) is a Nintendo Switch application that allows synchroni
 
 central remote server manages save data with internal revision IDs for each user and title.
 
+## Fork updates and releases
+
+See [client fixes and verification limits](docs/client-fixes.md) and [client regression tests](tests/client/README.md). GitHub Actions runs client and server tests, builds the matching app/module and uploads downloadable artifacts on every push to `main` and pull request. Pushing an `unss-v*` tag publishes a GitHub release only after all tests and the Switch build pass. Release ZIPs contain the app under `switch/uNSS/`; configure the app and install/update the bundled background service through its UI. Existing credentials, save data and boot flags are not bundled.
+
 # Usages
 ## Client
 ![uNSS Client Screen](resources/clientscreen.jpg)

@@ -327,7 +327,7 @@ SyncOptions MainScreen::buildSyncOptions() const
     SyncOptions options;
     options.uid = account.uid;
     options.nickname = account.nickname;
-    options.saveDataPath = "sdmc:/uNSS/saves";
+    options.saveDataPath = "sdmc:/uNSS/saves/" + toHex(account.uid.uid[0]) + toHex(account.uid.uid[1]);
     options.serverUrl = (std::string)config["remote"]["serverUrl"];
     options.remoteEnabled = (bool)config["remote"]["enabled"];
     options.archiveBy = config["title"]["archiveBy"].value;

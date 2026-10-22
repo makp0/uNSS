@@ -33,3 +33,8 @@ config.ini
 
 # Claude
 .claude/
+# Native client test report
+tests/client/verification.json
+
+# Packaged release assets
+dist/

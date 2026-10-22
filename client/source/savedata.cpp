@@ -37,51 +37,50 @@ int archiveSaveData(AccountUid uid, const u64 titleID, const std::string& output
 
     const std::string stringfyTitleID = toHex(titleID);
 
+    const std::string archivePath = outputPath + "/" + stringfyTitleID + ".sar";
+    const std::string temporaryPath = archivePath + ".tmp";
+    const Defer cleanup([&]() { remove(temporaryPath.c_str()); });
     ZipWriter zipWriter;
-    if (!zipWriter.open(outputPath + "/" + stringfyTitleID + ".sar"))
+    if (!zipWriter.open(temporaryPath))
     {
         return SAVEDATA_FAILED_TO_OPEN_ARCHIVE;
     }
 
     bool success = true;
 
-    walk("save:/", [&](const std::string& path, bool isDir)
+    const int saveWalk = walk("save:/", [&](const std::string& path, bool isDir)
     {
-        if (!success || isDir)
-        {
-            return;
-        }
-
+        if (!success) return;
         const std::string relativePath = path.substr(strlen("save:/"));
-        success = zipWriter.add(path, "saves/" + relativePath);
+        success = isDir ? zipWriter.addDirectory("saves/" + relativePath) : zipWriter.add(path, "saves/" + relativePath);
     });
 
-    if (!success)
-    {
-        return SAVEDATA_FAILED_TO_ADD_FILE;
-    }
+    if (!success || saveWalk != 0) return SAVEDATA_FAILED_TO_ADD_FILE;
 
-    if (mountBcatSaveData("bcat", titleID) == 0)
+    const int bcatResult = mountBcatSaveData("bcat", titleID);
+    if (bcatResult == 0)
     {
-        walk("bcat:/", [&](const std::string& path, bool isDir)
+        const int bcatWalk = walk("bcat:/", [&](const std::string& path, bool isDir)
         {
-            if (!success || isDir)
-            {
-                return;
-            }
-
+            if (!success) return;
             const std::string relativePath = path.substr(strlen("bcat:/"));
-            success = zipWriter.add(path, "bcat/" + relativePath);
+            success = isDir ? zipWriter.addDirectory("bcat/" + relativePath) : zipWriter.add(path, "bcat/" + relativePath);
         });
+        if (bcatWalk != 0) success = false;
     }
-    zipWriter.close();
+    else if (bcatResult != MOUNT_TARGET_NOT_FOUND) success = false;
+    if (!zipWriter.close()) success = false;
 
     if (!success)
     {
         return SAVEDATA_FAILED_TO_ADD_FILE;
     }
 
-    return 0;
+    ZipReader check;
+    if (!check.open(temporaryPath) || !check.validate()) return SAVEDATA_FAILED_TO_OPEN_ARCHIVE;
+    check.close();
+    if (!replaceCacheFile(temporaryPath, archivePath)) return SAVEDATA_FAILED_TO_OPEN_ARCHIVE;
+    return SAVEDATA_OK;
 }
 
 
@@ -132,7 +131,7 @@ int restoreSaveData(AccountUid uid, const u64 titleID, const std::string& source
     const std::string sourceFilePath = sourcePath + "/" + stringfyTitleID + ".sar";
 
     ZipReader zipReader;
-    if (!zipReader.open(sourceFilePath))
+    if (!zipReader.open(sourceFilePath) || !zipReader.validate())
     {
         return SAVEDATA_FAILED_TO_OPEN_ARCHIVE;
     }
@@ -151,45 +150,34 @@ int restoreSaveData(AccountUid uid, const u64 titleID, const std::string& source
     );
 
 
-    createSaveData(uid, titleID);
+    if (createSaveData(uid, titleID) != 0) return SAVEDATA_FAILED_TO_MOUNT;
 
     if (mountSaveData("save", uid, titleID) != 0)
     {
         return SAVEDATA_FAILED_TO_MOUNT;
     }
 
-    walk("save:/", [](const std::string& path, bool isDir)
-    {
-        if (isDir)
-        {
-            rmdir(path.c_str());
-        }
-        else
-        {
-            remove(path.c_str());
-        }
-    });
-    fsdevCommitDevice("save");
+    const int bcatResult = mountBcatSaveData("bcat", titleID);
+    const bool bcatMounted = bcatResult == 0;
+    if (bcatResult != 0 && bcatResult != MOUNT_TARGET_NOT_FOUND) return SAVEDATA_FAILED_TO_MOUNT;
+    bool needsBcat = false;
+    zipReader.walk([&](const std::string& path, ZipReader::EXTRACT_ONE_FUNC) { if (startWith(path, "bcat/")) needsBcat = true; return true; });
+    if (needsBcat && !bcatMounted) return SAVEDATA_FAILED_TO_MOUNT;
 
-    const bool bcatMounted = (mountBcatSaveData("bcat", titleID) == 0);
-    if (bcatMounted)
+    const auto clearDevice = [](const std::string& name) -> bool
     {
-        walk("bcat:/", [](const std::string& path, bool isDir)
+        bool removed = true;
+        const int walked = walk(name + ":/", [&](const std::string& path, bool isDir)
         {
-            if (isDir)
-            {
-                rmdir(path.c_str());
-            }
-            else
-            {
-                remove(path.c_str());
-            }
+            if ((isDir ? rmdir(path.c_str()) : remove(path.c_str())) != 0) removed = false;
         });
-        fsdevCommitDevice("bcat");
-    }
+        return walked == 0 && removed && R_SUCCEEDED(fsdevCommitDevice(name.c_str()));
+    };
+    if (!clearDevice("save") || (bcatMounted && !clearDevice("bcat")))
+        return SAVEDATA_FAILED_TO_EXTRACT_FILE;
 
     bool success = true;
-    zipReader.walk([&](const std::string& path, ZipReader::EXTRACT_ONE_FUNC extractOneFunc)
+    const bool walked = zipReader.walk([&](const std::string& path, ZipReader::EXTRACT_ONE_FUNC extractOneFunc)
     {
         if (!success)
         {
@@ -206,7 +194,7 @@ int restoreSaveData(AccountUid uid, const u64 titleID, const std::string& source
             if (success)
             {
                 // eager commit
-                fsdevCommitDevice("save");
+                success = R_SUCCEEDED(fsdevCommitDevice("save"));
             }
         }
         else if (startWith(path, "bcat/"))
@@ -217,14 +205,14 @@ int restoreSaveData(AccountUid uid, const u64 titleID, const std::string& source
             if (success)
             {
                 // eager commit
-                fsdevCommitDevice("bcat");
+                success = R_SUCCEEDED(fsdevCommitDevice("bcat"));
             }
         }
         return success;
     });
     zipReader.close();
 
-    if (!success)
+    if (!success || !walked)
     {
         return SAVEDATA_FAILED_TO_EXTRACT_FILE;
     }
@@ -253,7 +241,7 @@ int restoreAllSaveData(AccountUid uid, const std::string& sourcePath)
 int restoreAllSaveData(AccountUid uid, const std::string& sourcePath, const std::function<bool(int, int, u64)>& callback, const std::function<bool(int, int, int, u64)>& doneCallback)
 {
     std::vector<u64> titleIDs;
-    walk(sourcePath, [&](const std::string& path, bool isDir)
+    const int walked = walk(sourcePath, [&](const std::string& path, bool isDir)
     {
         if (isDir || !endWith(path, ".sar"))
         {
@@ -264,15 +252,18 @@ int restoreAllSaveData(AccountUid uid, const std::string& sourcePath, const std:
         titleIDs.push_back(fromHex<u64>(stringfyTitleID));
     });
 
+    if (walked != 0) return SAVEDATA_FAILED_TO_PROBE_TITLES;
+    int failures = 0;
     for (size_t i = 0; i < titleIDs.size(); i++)
     {
         if (!callback(titleIDs.size(), i + 1, titleIDs[i]))
             continue;
 
         const int ret = restoreSaveData(uid, titleIDs[i], sourcePath);
+        if (ret != SAVEDATA_OK) ++failures;
         if (!doneCallback(titleIDs.size(), i + 1, ret, titleIDs[i]))
             return ret;
     }
 
-    return SAVEDATA_OK;
+    return failures ? -failures : SAVEDATA_OK;
 }

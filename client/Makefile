@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 APP_TITLE=micro NX Save Sync
 APP_AUTHOR=prodeveloper0
-APP_VERSION=1.0.0
+APP_VERSION=1.0.0-20
 APP_TITLEID=uNSS
 
 #---------------------------------------------------------------------------------
@@ -35,7 +35,7 @@ CFLAGS	+=	$(INCLUDE) -D__SWITCH__ `sdl2-config --cflags` `curl-config --cflags`
 CXXFLAGS	:= $(CFLAGS) -std=c++20 -fexceptions
 
 ASFLAGS	:=	-g $(ARCH)
-LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=sslConnectionRead,--wrap=sslConnectionWrite
 
 LIBS	:= -lSDL2_ttf -lSDL2 -lfreetype -lharfbuzz -lfreetype -lpng -lbz2 -lz \
 		   -lEGL -lGLESv2 -lglapi -ldrm_nouveau -lnx `curl-config --libs`

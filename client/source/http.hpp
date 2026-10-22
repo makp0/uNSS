@@ -31,6 +31,12 @@ private:
     std::function<bool(const void* data, size_t size, size_t& actualSize)> onReceive;
     std::function<bool(void* data, size_t size, size_t& actualSize)> onSend;
 
+    CURLcode lastCurlCode = CURLE_OK;
+    std::string lastDiagnostic;
+    curl_off_t sendSize = -1;
+    std::function<void(curl_off_t, curl_off_t)> onProgress;
+    static int progressCallback(void* userp, curl_off_t downTotal, curl_off_t downNow, curl_off_t upTotal, curl_off_t upNow);
+
     // libcurl 콜백 함수
     static size_t writeCallback(void* contents, size_t size, size_t nmemb, void* userp);
     static size_t readCallback(void* ptr, size_t size, size_t nmemb, void* userp);
@@ -54,10 +60,15 @@ public:
     static void setVerifyTls(bool enabled);
 
 public:
+    CURLcode getLastCurlCode() const { return lastCurlCode; }
+    const std::string& getLastDiagnostic() const { return lastDiagnostic; }
+    HTTPClient& reset();
     HTTPClient& setUrl(const std::string& url);
     HTTPClient& setMethod(const std::string& method);
     HTTPClient& setHeader(const std::string& key, const std::string& value);
     HTTPClient& setReceiveCallback(const std::function<bool(const void* data, size_t size, size_t& actualSize)>& onReceive);
     HTTPClient& setSendCallback(const std::function<bool(void* data, size_t size, size_t& actualSize)>& onSend);
+    HTTPClient& setSendSize(curl_off_t size);
+    HTTPClient& setProgressCallback(const std::function<void(curl_off_t, curl_off_t)>& callback);
     int perform();
 };

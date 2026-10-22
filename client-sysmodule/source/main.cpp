@@ -29,6 +29,7 @@
 #include "http.hpp"
 #include "ini.hpp"
 #include "sync.hpp"
+#include "utils.hpp"
 
 
 // 절대 함부로 올리지 말 것.
@@ -793,7 +794,7 @@ SyncOptions makeOptions(Config& config, const Account& account)
     SyncOptions options;
     options.uid = account.uid;
     options.nickname = account.nickname;
-    options.saveDataPath = SAVE_DATA_PATH;
+    options.saveDataPath = std::string(SAVE_DATA_PATH) + "/" + toHex(account.uid.uid[0]) + toHex(account.uid.uid[1]);
     options.serverUrl = (std::string)config["remote"]["serverUrl"];
     options.remoteEnabled = true;
     options.archiveBy = config["title"]["archiveBy"].value;
@@ -801,6 +802,7 @@ SyncOptions makeOptions(Config& config, const Account& account)
     options.excludedTitleNames = config["title"]["excludedTitleNames"].value;
     // 바뀐 것만 올린다. 매번 전부 올리면 SD 와 서버를 모두 낭비한다.
     options.skipUnchanged = true;
+    options.stopOnUploadError = true;
     return options;
 }
 
@@ -836,27 +838,37 @@ void runBackupRound(Config& config, const std::vector<Account>& targets)
 
     writeLog("titles to upload: " + std::to_string(pending));
 
+    logHeapUsage("before network");
+    logResourceLimits("before network");
     if (!ensureNetwork())
     {
         writeLog("no network - will try again later");
         return;
     }
 
+    logHeapUsage("after network");
+    logResourceLimits("after network");
     bool allOk = true;
 
     for (const Account& account : targets)
     {
         writeLog(std::string("account: ") + account.nickname);
+        logHeapUsage("before account");
 
         const int ret = pushAllSaves(makeOptions(config, account), [](const std::string& line)
         {
+            if (!line.empty() && line[0] == '\r') return;
             writeLog("  " + line);
         });
 
+        logHeapUsage("after account");
         if (ret != 0)
         {
             writeLog("  failed, ret=" + std::to_string(ret));
             allOk = false;
+            writeLog("stopping this round after the first error; saves remain pending");
+            logResourceLimits("after backup error");
+            break;
         }
     }
 
